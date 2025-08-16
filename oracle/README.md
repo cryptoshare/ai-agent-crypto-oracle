@@ -52,11 +52,35 @@ docker run -p 8000:8000 --env-file .env crypto-oracle
 
 ### Railway Deployment
 
-1. **Push to GitHub** - Create a repository and push this folder
-2. **Create Railway Project** - "Deploy from Repo"
-3. **Configure Environment** - Add variables from `env.example`
-4. **Set Root Directory** - If mono-repo, set to `oracle`
-5. **Deploy** - Railway will build using the Dockerfile
+1. ✅ **Code is now on GitHub**: `https://github.com/cryptoshare/ai-agent-crypto-oracle`
+2. **Connect to Railway**:
+   - Go to [railway.app](https://railway.app)
+   - Sign in with GitHub
+   - Click "New Project" → "Deploy from GitHub repo"
+   - Select `cryptoshare/ai-agent-crypto-oracle`
+3. **Configure Project**:
+   - Set Root Directory to `oracle/`
+   - Add environment variables (see below)
+4. **Deploy** - Railway will automatically build and deploy!
+
+#### Environment Variables for Railway:
+Add these in Railway's "Variables" tab:
+
+```bash
+# OpenAI Configuration
+OPENAI_API_KEY=your_actual_openai_api_key
+OPENAI_MODEL=gpt-4o
+ALLOWED_DOMAINS=reuters.com,bloomberg.com,ft.com,coindesk.com,theblock.co,cointelegraph.com,cnbc.com,finance.yahoo.com
+QUERY_PACK=ETF flows crypto;exchange hack exploit;SEC regulation crypto;BTC ETH driver;stablecoin depeg;CPI inflation crypto
+DEFAULT_WINDOW=2h
+
+# CryptoPanic Configuration
+CRYPTOPANIC_TOKEN=your_actual_cryptopanic_token
+CRYPTOPANIC_WINDOW_MIN=4320
+CRYPTOPANIC_FILTER=hot
+CRYPTOPANIC_KIND=news
+CRYPTOPANIC_PUBLIC=true
+```
 
 ### Verify Deployment
 
