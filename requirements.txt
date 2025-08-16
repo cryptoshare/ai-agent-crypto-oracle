@@ -1,9 +1,4 @@
-# Python dependencies for AI Agent Crypto project
-# Add your project dependencies here
-
-# Example dependencies (uncomment and modify as needed):
-# requests==2.31.0
-# pandas==2.1.0
-# numpy==1.24.0
-# matplotlib==3.7.0
-# scikit-learn==1.3.0
+fastapi==0.95.2
+uvicorn==0.22.0
+requests==2.31.0
+python-dotenv==1.0.0
