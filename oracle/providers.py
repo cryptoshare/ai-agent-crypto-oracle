@@ -59,6 +59,68 @@ def call_openai_web_search(model: str, api_key: str, queries, domains, window="2
     return text
 
 
+def call_openai_analyze_posts(model: str, api_key: str, posts, window="2h"):
+    """Send CryptoPanic posts to ChatGPT for sentiment analysis"""
+    
+    # Prepare posts for analysis
+    posts_text = ""
+    for i, post in enumerate(posts[:10]):  # Analyze top 10 posts
+        title = post.get("title", "")
+        description = post.get("description", "")
+        posts_text += f"{i+1}. Title: {title}\n   Description: {description}\n\n"
+    
+    SYSTEM = (
+        "You are a crypto sentiment analyst. Analyze the following crypto news posts and return JSON with: "
+        "`items` (array of {title,url,source,time,sentiment,impact,reason} for each post), "
+        "`scores` (news,macro,geopolitics,btc_eth_context in [-1..+1]), and `notes`. "
+        "Sentiment should be between -1 (very negative) and +1 (very positive). "
+        "Impact should be between 0 (low impact) and 1 (high impact)."
+    )
+    
+    user_text = (
+        f"Analyze these crypto news posts from the last {window}:\n\n{posts_text}\n"
+        "Return JSON only, no prose. Focus on market-moving events, regulation, hacks, ETF news, etc."
+    )
+    
+    payload = {
+        "model": model,
+        "temperature": 0.2,
+        "messages": [
+            {"role": "system", "content": SYSTEM},
+            {"role": "user", "content": user_text}
+        ]
+    }
+    
+    # Add retry logic for rate limiting
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            r = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json=payload, timeout=120
+            )
+            r.raise_for_status()
+            break
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 429 and attempt < max_retries - 1:
+                wait_time = (2 ** attempt) * 2
+                time.sleep(wait_time)
+                continue
+            else:
+                print(f"API Error {e.response.status_code}: {e.response.text}")
+                raise
+    
+    data = r.json()
+    
+    if "choices" in data and len(data["choices"]) > 0:
+        text = data["choices"][0]["message"]["content"]
+    else:
+        text = ""
+    
+    return text
+
+
 def fetch_cryptopanic_posts(token: str, minutes: int = 120,
                             kind: str = "news", flt: str = "hot",
                             public: bool = True, page: int = 1, per_page: int = 50):

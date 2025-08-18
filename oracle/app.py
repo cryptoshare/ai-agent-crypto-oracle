@@ -2,7 +2,7 @@ import os, json, datetime as dt
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
 from settings import settings
-from providers import call_openai_web_search, fetch_cryptopanic_posts
+from providers import call_openai_web_search, fetch_cryptopanic_posts, call_openai_analyze_posts
 from scoring import normalize_items, composite_score, regime_from_composite, default_guidance, cryptopanic_subscore
 
 app = FastAPI()
@@ -46,6 +46,8 @@ def run_oracle(window: str = Query(default=None, description="e.g., 2h, 1h")):
     cp_posts = []
     cp_sub = 0.0
     cp_items = []  # Convert CP posts to items format
+    cp_scores = {}  # Scores from ChatGPT analysis
+    
     if settings.CRYPTOPANIC_TOKEN:
         try:
             cp_posts = fetch_cryptopanic_posts(
@@ -55,40 +57,50 @@ def run_oracle(window: str = Query(default=None, description="e.g., 2h, 1h")):
                 flt=settings.CRYPTOPANIC_FILTER,
                 public=settings.CRYPTOPANIC_PUBLIC
             )
-            cp_sub = cryptopanic_subscore(cp_posts)
             
-            # Convert CryptoPanic posts to items format
-            for post in cp_posts[:8]:  # Take top 8 CP posts
-                # Calculate sentiment for this post
-                title = post.get("title", "") or ""
-                description = post.get("description", "") or ""
-                text = f"{title} {description}".lower()
-                
-                # Simple keyword-based sentiment
-                base = 0.0
-                positive_keywords = ["surge", "bullish", "rally", "breakout", "high", "gain", "up", "positive", "etf", "approval", "partnership"]
-                negative_keywords = ["drop", "bearish", "crash", "fall", "low", "loss", "down", "negative", "hack", "exploit", "breach", "delay"]
-                
-                pos_count = sum(1 for word in positive_keywords if word in text)
-                neg_count = sum(1 for word in negative_keywords if word in text)
-                
-                if pos_count > neg_count:
-                    sentiment = min(0.8, (pos_count - neg_count) * 0.2)
-                elif neg_count > pos_count:
-                    sentiment = max(-0.8, (neg_count - pos_count) * -0.2)
-                else:
-                    sentiment = 0.0
-                
-                cp_item = {
-                    "title": post.get("title", ""),
-                    "url": post.get("url", ""),
-                    "source": "CryptoPanic",
-                    "time": post.get("published_at") or post.get("created_at", ""),
-                    "sentiment": sentiment,
-                    "impact": 0.6,  # CryptoPanic posts get slightly higher impact
-                    "reason": f"CryptoPanic {post.get('kind', 'news')} - {post.get('filter', 'hot')}"
-                }
-                cp_items.append(cp_item)
+            if cp_posts:
+                # Send CryptoPanic posts to ChatGPT for analysis
+                try:
+                    cp_raw = call_openai_analyze_posts(
+                        model=settings.OPENAI_MODEL,
+                        api_key=settings.OPENAI_API_KEY,
+                        posts=cp_posts,
+                        window=win
+                    )
+                    
+                    # Parse ChatGPT's analysis of CryptoPanic posts
+                    try:
+                        cleaned_cp_raw = cp_raw.strip()
+                        if cleaned_cp_raw.startswith("```json"):
+                            cleaned_cp_raw = cleaned_cp_raw[7:]
+                        if cleaned_cp_raw.endswith("```"):
+                            cleaned_cp_raw = cleaned_cp_raw[:-3]
+                        cleaned_cp_raw = cleaned_cp_raw.strip()
+                        
+                        cp_payload = json.loads(cleaned_cp_raw)
+                        cp_items = cp_payload.get("items", [])
+                        cp_scores = cp_payload.get("scores", {})
+                        
+                        # Update source to CryptoPanic for all items
+                        for item in cp_items:
+                            item["source"] = "CryptoPanic"
+                            item["url"] = item.get("url", "")  # Keep original URL if provided
+                        
+                    except Exception as e:
+                        print(f"CryptoPanic ChatGPT parse error: {e}")
+                        # Fallback to simple keyword analysis
+                        cp_sub = cryptopanic_subscore(cp_posts)
+                        cp_items = []
+                        
+                except Exception as e:
+                    print(f"CryptoPanic ChatGPT analysis error: {e}")
+                    # Fallback to simple keyword analysis
+                    cp_sub = cryptopanic_subscore(cp_posts)
+                    cp_items = []
+            
+            # If no ChatGPT analysis, use simple scoring
+            if not cp_items:
+                cp_sub = cryptopanic_subscore(cp_posts)
                 
         except Exception as e:
             print(f"CryptoPanic error: {e}")
@@ -99,11 +111,28 @@ def run_oracle(window: str = Query(default=None, description="e.g., 2h, 1h")):
     all_items = items + cp_items
     
     # (D) Combine into final scores:
-    # Treat CP as a strong contributor to the 'news' channel
-    news_final = max(-1.0, min(1.0, 0.6*cp_sub + 0.4*scores_ws.get("news", 0.0)))
-    scores = dict(scores_ws)  # copy
-    scores["news"] = news_final
-    scores["news_cp"] = cp_sub  # expose for transparency (optional)
+    # Use ChatGPT's analysis of CryptoPanic if available, otherwise use simple scoring
+    if cp_scores:
+        # Blend ChatGPT's analysis of both sources
+        news_final = max(-1.0, min(1.0, 0.6*cp_scores.get("news", 0.0) + 0.4*scores_ws.get("news", 0.0)))
+        macro_final = max(-1.0, min(1.0, 0.6*cp_scores.get("macro", 0.0) + 0.4*scores_ws.get("macro", 0.0)))
+        geop_final = max(-1.0, min(1.0, 0.6*cp_scores.get("geopolitics", 0.0) + 0.4*scores_ws.get("geopolitics", 0.0)))
+        ctx_final = max(-1.0, min(1.0, 0.6*cp_scores.get("btc_eth_context", 0.0) + 0.4*scores_ws.get("btc_eth_context", 0.0)))
+        
+        scores = {
+            "news": news_final,
+            "macro": macro_final,
+            "geopolitics": geop_final,
+            "btc_eth_context": ctx_final,
+            "news_cp": cp_scores.get("news", 0.0),  # expose for transparency
+            "news_openai": scores_ws.get("news", 0.0)  # expose for transparency
+        }
+    else:
+        # Fallback to simple scoring
+        news_final = max(-1.0, min(1.0, 0.6*cp_sub + 0.4*scores_ws.get("news", 0.0)))
+        scores = dict(scores_ws)  # copy
+        scores["news"] = news_final
+        scores["news_cp"] = cp_sub  # expose for transparency
 
     composite = composite_score(scores)
     regime = regime_from_composite(composite)
