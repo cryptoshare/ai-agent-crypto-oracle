@@ -45,6 +45,7 @@ def run_oracle(window: str = Query(default=None, description="e.g., 2h, 1h")):
     # (B) CryptoPanic pass
     cp_posts = []
     cp_sub = 0.0
+    cp_items = []  # Convert CP posts to items format
     if settings.CRYPTOPANIC_TOKEN:
         try:
             cp_posts = fetch_cryptopanic_posts(
@@ -55,12 +56,49 @@ def run_oracle(window: str = Query(default=None, description="e.g., 2h, 1h")):
                 public=settings.CRYPTOPANIC_PUBLIC
             )
             cp_sub = cryptopanic_subscore(cp_posts)
+            
+            # Convert CryptoPanic posts to items format
+            for post in cp_posts[:8]:  # Take top 8 CP posts
+                # Calculate sentiment for this post
+                title = post.get("title", "") or ""
+                description = post.get("description", "") or ""
+                text = f"{title} {description}".lower()
+                
+                # Simple keyword-based sentiment
+                base = 0.0
+                positive_keywords = ["surge", "bullish", "rally", "breakout", "high", "gain", "up", "positive", "etf", "approval", "partnership"]
+                negative_keywords = ["drop", "bearish", "crash", "fall", "low", "loss", "down", "negative", "hack", "exploit", "breach", "delay"]
+                
+                pos_count = sum(1 for word in positive_keywords if word in text)
+                neg_count = sum(1 for word in negative_keywords if word in text)
+                
+                if pos_count > neg_count:
+                    sentiment = min(0.8, (pos_count - neg_count) * 0.2)
+                elif neg_count > pos_count:
+                    sentiment = max(-0.8, (neg_count - pos_count) * -0.2)
+                else:
+                    sentiment = 0.0
+                
+                cp_item = {
+                    "title": post.get("title", ""),
+                    "url": post.get("url", ""),
+                    "source": "CryptoPanic",
+                    "time": post.get("published_at") or post.get("created_at", ""),
+                    "sentiment": sentiment,
+                    "impact": 0.6,  # CryptoPanic posts get slightly higher impact
+                    "reason": f"CryptoPanic {post.get('kind', 'news')} - {post.get('filter', 'hot')}"
+                }
+                cp_items.append(cp_item)
+                
         except Exception as e:
             print(f"CryptoPanic error: {e}")
             cp_posts = []
             cp_sub = 0.0
 
-    # (C) Combine into final scores:
+    # (C) Combine items from both sources
+    all_items = items + cp_items
+    
+    # (D) Combine into final scores:
     # Treat CP as a strong contributor to the 'news' channel
     news_final = max(-1.0, min(1.0, 0.6*cp_sub + 0.4*scores_ws.get("news", 0.0)))
     scores = dict(scores_ws)  # copy
@@ -78,10 +116,12 @@ def run_oracle(window: str = Query(default=None, description="e.g., 2h, 1h")):
         "composite": composite,
         "regime": regime,
         "guidance": guidance,
-        "items": items[:12],
+        "items": all_items[:20],  # Show up to 20 items total (OpenAI + CryptoPanic)
         "notes": payload.get("notes", ""),
         "sources": {
-            "cryptopanic_count": len(cp_posts)
+            "openai_count": len(items),
+            "cryptopanic_count": len(cp_posts),
+            "total_items": len(all_items)
         }
     }
     return JSONResponse(snapshot)
